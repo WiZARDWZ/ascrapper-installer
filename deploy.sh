@@ -281,15 +281,16 @@ upsert_env() {
 
 env_get() {
   local key="$1"
+  local file="$2"
   local line=""
   local value=""
 
-  if ! run_as_user "test -f '$ENV_FILE'"; then
+  if ! run_as_user "test -f '$file'"; then
     echo ""
     return 0
   fi
 
-  line="$(run_as_user "grep -m1 -E '^${key}=' '$ENV_FILE' || true")"
+  line="$(run_as_user "grep -m1 -E '^${key}=' '$file' || true")"
   if [[ -z "$line" ]]; then
     echo ""
     return 0
@@ -317,7 +318,7 @@ env_wizard() {
   run_as_user "mkdir -p '$APP_DIR' && touch '$ENV_FILE'"
 
   local token existing_token
-  existing_token="$(env_get 'TELEGRAM_BOT_TOKEN' || true)"
+  existing_token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE" || true)"
   token="${TELEGRAM_BOT_TOKEN:-}"
 
   if [[ -z "$token" && -n "$existing_token" ]]; then
@@ -334,7 +335,7 @@ env_wizard() {
   upsert_env "TELEGRAM_BOT_TOKEN" "$token"
 
   local proxy_choice proxy_val
-  proxy_val="${TELEGRAM_PROXY_URL:-$(env_get 'TELEGRAM_PROXY_URL' || true)}"
+  proxy_val="${TELEGRAM_PROXY_URL:-$(env_get 'TELEGRAM_PROXY_URL' "$ENV_FILE" || true)}"
 
   if [[ -n "${TELEGRAM_PROXY_URL:-}" ]]; then
     upsert_env "TELEGRAM_PROXY_URL" "$TELEGRAM_PROXY_URL"
@@ -358,11 +359,11 @@ env_wizard() {
 
 ensure_token_present() {
   local token
-  token="$(env_get 'TELEGRAM_BOT_TOKEN' || true)"
+  token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE" || true)"
   if [[ -z "$token" ]]; then
     echo "[WARN] TELEGRAM_BOT_TOKEN خالی است."
     env_wizard
-    token="$(env_get 'TELEGRAM_BOT_TOKEN' || true)"
+    token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE" || true)"
     if [[ -z "$token" ]]; then
       echo "[ERROR] بدون TELEGRAM_BOT_TOKEN سرویس اجرا نمی‌شود."
       exit 1
@@ -412,7 +413,6 @@ show_status_logs() {
 }
 
 install_setup_flow() {
-  require_cmd awk
   ensure_prerequisites
   select_auth_and_validate
   clone_or_update_repo
