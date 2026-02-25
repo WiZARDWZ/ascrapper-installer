@@ -281,7 +281,36 @@ upsert_env() {
 
 env_get() {
   local key="$1"
-  run_as_user "awk -F= '/^${key}=/{print substr(\$0, index(\$0, "=")+1); exit}' '$ENV_FILE'"
+  local line=""
+  local value=""
+
+  if ! run_as_user "test -f '$ENV_FILE'"; then
+    echo ""
+    return 0
+  fi
+
+  line="$(run_as_user "grep -m1 -E '^${key}=' '$ENV_FILE' || true")"
+  if [[ -z "$line" ]]; then
+    echo ""
+    return 0
+  fi
+
+  value="${line#*=}"
+
+  # trim leading/trailing whitespace
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+
+  # strip matching surrounding quotes
+  if [[ "$value" =~ ^\".*\"$ ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+  elif [[ "$value" =~ ^\'.*\'$ ]]; then
+    value="${value#\'}"
+    value="${value%\'}"
+  fi
+
+  echo "$value"
 }
 
 env_wizard() {

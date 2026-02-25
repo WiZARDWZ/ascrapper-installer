@@ -100,6 +100,12 @@ The installer writes/updates:
 ~/apps/ascrapper/.env
 ```
 
+You can also edit this file manually any time:
+
+```bash
+nano ~/apps/ascrapper/.env
+```
+
 Important keys:
 
 ```env
