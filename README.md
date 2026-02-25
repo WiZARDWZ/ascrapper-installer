@@ -118,9 +118,13 @@ Key values:
 ```env
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_PROXY_URL=
+PERF_PROFILE=normal
 TELEGRAM_CONNECT_TIMEOUT=30
 TELEGRAM_READ_TIMEOUT=30
-HEADLESS=1
+HEADLESS=0
+LIGHT_CHECK_INTERVAL_SECONDS=180
+LIGHT_CHECK_PAGES=2
+WORKER_TICK_SECONDS=10
 DB_PATH=realestate.db
 OUTPUT_DIR=output
 PYTHONUNBUFFERED=1
@@ -128,6 +132,32 @@ PYTHONUNBUFFERED=1
 
 If token is already present, wizard does not ask again.
 If token is empty, wizard prompts and deploy fails clearly if it remains empty.
+
+### Performance profile in wizard
+
+During install, the wizard asks for a performance profile:
+
+- **Normal** (recommended for stronger servers)
+  - `PERF_PROFILE=normal`
+  - default `HEADLESS=0` (Xvfb service mode)
+  - optional advanced headless override to `HEADLESS=1`
+  - `LIGHT_CHECK_INTERVAL_SECONDS=180`
+  - `LIGHT_CHECK_PAGES=2`
+  - `WORKER_TICK_SECONDS=10`
+
+- **Low-end** (recommended for 1 CPU / 1 GB RAM)
+  - `PERF_PROFILE=low`
+  - `HEADLESS=0`
+  - `LIGHT_CHECK_INTERVAL_SECONDS=600`
+  - `LIGHT_CHECK_PAGES=1`
+  - `WORKER_TICK_SECONDS=20`
+
+To change later, edit `.env` and restart:
+
+```bash
+nano ~/apps/ascrapper/.env
+sudo systemctl restart ascrapper
+```
 
 ## deploy.sh menu actions
 
@@ -149,6 +179,12 @@ Menu options:
 8. Reset saved installer config (repo/auth)
 0. Exit
 
+Update action keeps your existing `.env` values (including profile) and only runs:
+
+- `git pull`/repo sync
+- dependency install from `requirements.txt`
+- service restart
+
 ## Update installer only (no bot/service impact)
 
 Option 7 updates installer scripts in cache only:
@@ -169,6 +205,11 @@ sudo systemctl stop ascrapper
 sudo systemctl enable ascrapper
 journalctl -u ascrapper -f
 ```
+
+`deploy.sh` writes `ExecStart` with `xvfb-run` based on `PERF_PROFILE`:
+
+- `low` -> `-screen 0 1365x768x24`
+- `normal` -> `-screen 0 1920x1080x24`
 
 ## Windows note
 

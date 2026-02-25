@@ -168,7 +168,8 @@ ensure_prerequisites() {
     git curl ca-certificates unzip build-essential pkg-config \
     "$PY_BIN" "${PY_BIN}-venv" "${PY_BIN}-distutils" \
     libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libx11-xcb1 \
-    libxcomposite1 libxdamage1 libxrandr2 libasound2 fonts-liberation
+    libxcomposite1 libxdamage1 libxrandr2 libasound2 fonts-liberation \
+    xvfb
 
   if [[ "$INSTALL_CHROME" == "1" ]]; then
     log "Installing Google Chrome stable..."
@@ -393,6 +394,46 @@ env_get() {
   echo "$value"
 }
 
+choose_perf_profile() {
+  local existing_profile
+  existing_profile="$(env_get 'PERF_PROFILE' "$ENV_FILE")"
+
+  while true; do
+    echo
+    echo "Select performance profile:"
+    echo "1) Normal (recommended for stronger servers)"
+    echo "2) Low-end (recommended for 1 CPU / 1 GB RAM)"
+
+    local prompt="Your choice [1/2]"
+    if [[ -n "$existing_profile" ]]; then
+      prompt+=" (Enter to keep: $existing_profile)"
+    fi
+    prompt+=": "
+
+    local choice
+    read -r -p "$prompt" choice
+
+    case "$choice" in
+      "")
+        if [[ "$existing_profile" =~ ^(normal|low)$ ]]; then
+          PERF_PROFILE_SELECTED="$existing_profile"
+          return 0
+        fi
+        ;;
+      1|normal|NORMAL)
+        PERF_PROFILE_SELECTED="normal"
+        return 0
+        ;;
+      2|low|LOW|low-end|LOW-END)
+        PERF_PROFILE_SELECTED="low"
+        return 0
+        ;;
+    esac
+
+    warn "Invalid profile selection."
+  done
+}
+
 env_wizard() {
   run_as_user "mkdir -p '$APP_DIR' && touch '$ENV_FILE'"
 
@@ -428,9 +469,35 @@ env_wizard() {
     fi
   fi
 
+  choose_perf_profile
+  local perf_profile
+  perf_profile="$PERF_PROFILE_SELECTED"
+
+  local headless_value="0"
+  local light_interval="180"
+  local light_pages="2"
+  local worker_tick="10"
+
+  if [[ "$perf_profile" == "low" ]]; then
+    headless_value="0"
+    light_interval="600"
+    light_pages="1"
+    worker_tick="20"
+  else
+    local advanced_headless
+    read -r -p "Enable advanced headless mode for Normal profile? (y/N): " advanced_headless
+    if [[ "$advanced_headless" =~ ^[Yy]$ ]]; then
+      headless_value="1"
+    fi
+  fi
+
+  upsert_env "PERF_PROFILE" "$perf_profile"
   upsert_env "TELEGRAM_CONNECT_TIMEOUT" "30"
   upsert_env "TELEGRAM_READ_TIMEOUT" "30"
-  upsert_env "HEADLESS" "1"
+  upsert_env "HEADLESS" "$headless_value"
+  upsert_env "LIGHT_CHECK_INTERVAL_SECONDS" "$light_interval"
+  upsert_env "LIGHT_CHECK_PAGES" "$light_pages"
+  upsert_env "WORKER_TICK_SECONDS" "$worker_tick"
   upsert_env "DB_PATH" "realestate.db"
   upsert_env "OUTPUT_DIR" "output"
   upsert_env "PYTHONUNBUFFERED" "1"
@@ -449,6 +516,20 @@ ensure_token_present() {
 }
 
 write_service() {
+  local perf_profile xvfb_screen exec_start
+  perf_profile="$(env_get 'PERF_PROFILE' "$ENV_FILE")"
+
+  case "$perf_profile" in
+    low)
+      xvfb_screen="1365x768x24"
+      ;;
+    *)
+      xvfb_screen="1920x1080x24"
+      ;;
+  esac
+
+  exec_start="/usr/bin/xvfb-run -a -s \"-screen 0 ${xvfb_screen}\" ${APP_DIR}/.venv/bin/python telegram_bot.py"
+
   $SUDO tee "$SERVICE_FILE" >/dev/null <<SERVICEEOF
 [Unit]
 Description=${APP_NAME} bot service
@@ -461,7 +542,7 @@ User=${RUN_USER}
 Group=${RUN_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
-ExecStart=${APP_DIR}/.venv/bin/python telegram_bot.py
+ExecStart=${exec_start}
 Restart=always
 RestartSec=5
 
