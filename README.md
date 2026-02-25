@@ -17,27 +17,57 @@ Installer repository for deploying a private Python Telegram bot project (ascrap
 └── README.md
 ```
 
-## 1) One-liner install on Ubuntu 22.04
+## 1) Installation methods (Ubuntu 22.04)
 
-Run this on your target server:
+### Recommended (safe interactive mode)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WiZARDWZ/ascrapper-installer/main/bootstrap.sh | bash
+curl -fsSLo /tmp/bootstrap.sh https://raw.githubusercontent.com/WiZARDWZ/ascrapper-installer/main/bootstrap.sh && bash /tmp/bootstrap.sh
 ```
+
+### Alternative
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/WiZARDWZ/ascrapper-installer/main/bootstrap.sh)"
+```
+
+### Why not always `curl ... | bash`?
+
+In some environments, `curl | bash` runs without an interactive TTY, so scripts that use `read` cannot receive user input and may hang/retry unexpectedly.
+
+`bootstrap.sh` now handles this safely:
+
+- If `/dev/tty` exists, it reads prompts from TTY directly.
+- If TTY does not exist, it uses environment variables (`REPO_URL`, `BRANCH`, `APP_NAME`, `AUTH_CHOICE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PROXY_URL`).
+- If required values are missing, it fails fast with a clear guidance message.
+
+---
+
+## 2) What bootstrap.sh does
 
 `bootstrap.sh` will:
 
 1. Install prerequisites (`git`, `curl`, `python3.11`, build tools, etc.).
-2. Ask for your target **private GitHub repo URL**.
-3. Ask you to choose auth method:
-   - SSH Deploy Key (recommended)
-   - GitHub Personal Access Token (PAT)
-4. Ask for `TELEGRAM_BOT_TOKEN` (and optional proxy).
-5. Run `deploy.sh` for install/update/restart.
+2. Download `deploy.sh` with retry/timeout settings.
+3. Save `deploy.sh` in:
+
+```bash
+~/.cache/ascrapper-installer/deploy.sh
+```
+
+(or `${XDG_CACHE_HOME}/ascrapper-installer/deploy.sh` if `XDG_CACHE_HOME` is set).
+
+4. Ask for:
+   - target private GitHub repo URL
+   - branch name
+   - app name
+   - auth mode (SSH Deploy Key or PAT)
+   - Telegram token (+ optional proxy)
+   - action (install/update/restart)
 
 ---
 
-## 2) GitHub private repo access methods
+## 3) GitHub private repo access methods
 
 ### Option A: SSH Deploy Key (recommended)
 
@@ -62,7 +92,7 @@ with `chmod 600`.
 
 ---
 
-## 3) Telegram token and proxy setup
+## 4) Telegram token and proxy setup
 
 The installer writes/updates:
 
@@ -107,12 +137,12 @@ sudo systemctl restart ascrapper
 
 ---
 
-## 4) deploy.sh usage
+## 5) deploy.sh usage
 
 You can run deploy directly any time:
 
 ```bash
-bash deploy.sh
+bash ~/.cache/ascrapper-installer/deploy.sh
 ```
 
 It supports:
@@ -127,7 +157,7 @@ It supports:
 You can also automate action from bootstrap/environment:
 
 ```bash
-DEPLOY_ACTION=update bash deploy.sh
+DEPLOY_ACTION=update bash ~/.cache/ascrapper-installer/deploy.sh
 ```
 
 Actions:
@@ -138,7 +168,7 @@ Actions:
 
 ---
 
-## 5) systemd service management
+## 6) systemd service management
 
 Service name defaults to `ascrapper`.
 
@@ -158,18 +188,18 @@ Service file location:
 
 ---
 
-## 6) Update after code changes
+## 7) Update after code changes
 
-For future updates, just rerun:
+For future updates, rerun deploy and choose update in menu:
 
 ```bash
-bash deploy.sh
+bash ~/.cache/ascrapper-installer/deploy.sh
 ```
 
-Choose update option from menu, or run non-interactive:
+Or run non-interactive:
 
 ```bash
-DEPLOY_ACTION=update bash deploy.sh
+DEPLOY_ACTION=update bash ~/.cache/ascrapper-installer/deploy.sh
 ```
 
 This will:
@@ -180,7 +210,7 @@ This will:
 
 ---
 
-## 7) Windows note
+## 8) Windows note
 
 This installer is optimized for **Ubuntu 22.04 servers**.
 
