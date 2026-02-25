@@ -1,12 +1,12 @@
 # ascrapper-installer
 
-Installer repository for deploying a private Python Telegram bot project (ascrapper) on **Ubuntu 22.04 headless servers** with `systemd` service management.
+Installer repository for deploying a private Python Telegram bot project (`ascrapper`) on **Ubuntu 22.04 headless servers** with `systemd`.
 
-> This repo provides:
->
-> - `bootstrap.sh` → one-command bootstrap installer
-> - `deploy.sh` → full deploy/update/service management flow
-> - this README → complete installation and operations guide
+This repo provides:
+
+- `bootstrap.sh` — bootstrap entrypoint
+- `deploy.sh` — install/update/service menu
+- `README.md` — usage and operational guide
 
 ## Files
 
@@ -17,9 +17,9 @@ Installer repository for deploying a private Python Telegram bot project (ascrap
 └── README.md
 ```
 
-## 1) Installation methods (Ubuntu 22.04)
+## Install methods (Ubuntu 22.04)
 
-### Recommended (safe interactive mode)
+### Recommended
 
 ```bash
 curl -fsSLo /tmp/bootstrap.sh https://raw.githubusercontent.com/WiZARDWZ/ascrapper-installer/main/bootstrap.sh && bash /tmp/bootstrap.sh
@@ -31,82 +31,89 @@ curl -fsSLo /tmp/bootstrap.sh https://raw.githubusercontent.com/WiZARDWZ/ascrapp
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/WiZARDWZ/ascrapper-installer/main/bootstrap.sh)"
 ```
 
-### Why not always `curl ... | bash`?
+`bootstrap.sh` handles TTY safely:
 
-In some environments, `curl | bash` runs without an interactive TTY, so scripts that use `read` cannot receive user input and may hang/retry unexpectedly.
+- Reads prompts from `/dev/tty` when available.
+- In non-interactive mode, accepts env vars:
+  `REPO_URL`, `BRANCH`, `APP_NAME`, `AUTH_MODE`/`AUTH_CHOICE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PROXY_URL`, `DEPLOY_ACTION`.
+- If required values are missing and no TTY exists, exits with a clear hint.
 
-`bootstrap.sh` now handles this safely:
+## Command shortcut
 
-- If `/dev/tty` exists, it reads prompts from TTY directly.
-- If TTY does not exist, it uses environment variables (`REPO_URL`, `BRANCH`, `APP_NAME`, `AUTH_CHOICE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PROXY_URL`).
-- If required values are missing, it fails fast with a clear guidance message.
-
----
-
-## 2) What bootstrap.sh does
-
-`bootstrap.sh` will:
-
-1. Install prerequisites (`git`, `curl`, `python3.11`, build tools, etc.).
-2. Download `deploy.sh` with retry/timeout settings.
-3. Save `deploy.sh` in:
+Bootstrap installs a wrapper command:
 
 ```bash
-~/.cache/ascrapper-installer/deploy.sh
+ascrapper
 ```
 
-(or `${XDG_CACHE_HOME}/ascrapper-installer/deploy.sh` if `XDG_CACHE_HOME` is set).
+This runs the cached installer menu:
 
-4. Ask for:
-   - target private GitHub repo URL
-   - branch name
-   - app name
-   - auth mode (SSH Deploy Key or PAT)
-   - Telegram token (+ optional proxy)
-   - action (install/update/restart)
+```bash
+bash "${XDG_CACHE_HOME:-$HOME/.cache}/ascrapper-installer/deploy.sh"
+```
 
----
+## Paths used by installer
 
-## 3) GitHub private repo access methods
+- Installer cache:
+  - `${XDG_CACHE_HOME:-$HOME/.cache}/ascrapper-installer/deploy.sh`
+  - `${XDG_CACHE_HOME:-$HOME/.cache}/ascrapper-installer/bootstrap.sh`
+- Installer persistent config:
+  - `~/.config/ascrapper/installer.conf`
+- PAT storage:
+  - `~/.config/ascrapper/github_token`
+- App directory:
+  - `~/apps/ascrapper`
+- App env file:
+  - `~/apps/ascrapper/.env`
+- systemd unit:
+  - `/etc/systemd/system/ascrapper.service`
+
+## Persistent installer config behavior
+
+After a successful clone/update, `deploy.sh` saves and reuses config values:
+
+- `REPO_URL`
+- `AUTH_MODE`
+- `BRANCH`
+- `APP_NAME`
+- `INSTALL_CHROME`
+
+Result: update runs do **not** ask for repo URL/auth again unless:
+
+- config is missing,
+- git access fails,
+- or you choose **Reset saved installer config (repo/auth)** in the menu.
+
+## GitHub private repo access
 
 ### Option A: SSH Deploy Key (recommended)
 
-- Script can generate an SSH key on the server.
-- Copy printed public key.
-- Add to GitHub:
-  - `Repo → Settings → Deploy keys → Add deploy key`
-- Then script validates access with `git ls-remote`.
+- Script can generate a key.
+- Add printed public key in:
+  `Repo -> Settings -> Deploy keys -> Add deploy key`
+- Script validates access using `git ls-remote`.
 
 ### Option B: GitHub PAT
 
-- Create a token from GitHub:
-  - `Settings → Developer settings → Personal access tokens`
-- Minimum scope for private repo read: repository read access.
-- Script stores PAT at:
+- Create a PAT from:
+  `GitHub -> Settings -> Developer settings -> Personal access tokens`
+- Script stores token with `chmod 600`.
 
-```bash
-~/.config/ascrapper/github_token
-```
+## Telegram token and proxy
 
-with `chmod 600`.
-
----
-
-## 4) Telegram token and proxy setup
-
-The installer writes/updates:
+The installer writes `.env` here:
 
 ```bash
 ~/apps/ascrapper/.env
 ```
 
-You can also edit this file manually any time:
+You can edit `.env` manually any time:
 
 ```bash
 nano ~/apps/ascrapper/.env
 ```
 
-Important keys:
+Key values:
 
 ```env
 TELEGRAM_BOT_TOKEN=...
@@ -119,64 +126,41 @@ OUTPUT_DIR=output
 PYTHONUNBUFFERED=1
 ```
 
-### Get Telegram bot token
+If token is already present, wizard does not ask again.
+If token is empty, wizard prompts and deploy fails clearly if it remains empty.
 
-- Open Telegram and message **@BotFather**.
-- Create a bot using `/newbot`.
-- Copy token and provide it to installer.
+## deploy.sh menu actions
 
-Reference: https://core.telegram.org/bots#how-do-i-create-a-bot
-
-### If proxy/firewall is required
-
-Set `TELEGRAM_PROXY_URL`, for example:
-
-```env
-TELEGRAM_PROXY_URL=http://127.0.0.1:10809
-```
-
-Then restart service:
+Run menu:
 
 ```bash
-sudo systemctl restart ascrapper
+ascrapper
 ```
 
----
+Menu options:
 
-## 5) deploy.sh usage
+1. Initial install / setup
+2. Update code from GitHub + deps + restart service
+3. Restart service
+4. Stop service
+5. Show status and logs
+6. Reconfigure token/proxy (`.env` wizard)
+7. **Update installer only** (updates cached scripts; does not touch bot repo/service)
+8. Reset saved installer config (repo/auth)
+0. Exit
 
-You can run deploy directly any time:
+## Update installer only (no bot/service impact)
 
-```bash
-bash ~/.cache/ascrapper-installer/deploy.sh
-```
+Option 7 updates installer scripts in cache only:
 
-It supports:
+- updates `deploy.sh`
+- updates `bootstrap.sh`
+- does **not** run `git pull` on bot repo
+- does **not** restart/stop systemd bot service
 
-- Initial install/setup
-- Update flow (`git pull`, dependency install, service restart)
-- Restart service
-- Stop service
-- Show status and logs
-- Reconfigure token/proxy via `.env` wizard
+After update, rerun `ascrapper`.
 
-You can also automate action from bootstrap/environment:
-
-```bash
-DEPLOY_ACTION=update bash ~/.cache/ascrapper-installer/deploy.sh
-```
-
-Actions:
-
-- `install`
-- `update`
-- `restart`
-
----
-
-## 6) systemd service management
-
-Service name defaults to `ascrapper`.
+## Service operations
 
 ```bash
 sudo systemctl status ascrapper
@@ -186,44 +170,7 @@ sudo systemctl enable ascrapper
 journalctl -u ascrapper -f
 ```
 
-Service file location:
+## Windows note
 
-```bash
-/etc/systemd/system/ascrapper.service
-```
-
----
-
-## 7) Update after code changes
-
-For future updates, rerun deploy and choose update in menu:
-
-```bash
-bash ~/.cache/ascrapper-installer/deploy.sh
-```
-
-Or run non-interactive:
-
-```bash
-DEPLOY_ACTION=update bash ~/.cache/ascrapper-installer/deploy.sh
-```
-
-This will:
-
-1. Pull latest code from your branch (`main` by default)
-2. Reinstall/update dependencies from `requirements.txt`
-3. Restart the systemd service
-
----
-
-## 8) Windows note
-
-This installer is optimized for **Ubuntu 22.04 servers**.
-
-For Windows deployments, run your bot with:
-
-- Python 3.11
-- virtualenv
-- `.env` file values matching Linux setup
-
-`systemd` parts are Linux-only; on Windows, use Task Scheduler/NSSM/PM2 equivalent if persistent background execution is needed.
+This installer is optimized for Ubuntu 22.04 servers.
+For Windows, use Python 3.11 + virtualenv + equivalent service manager (Task Scheduler/NSSM/etc.).

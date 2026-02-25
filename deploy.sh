@@ -7,15 +7,19 @@ BRANCH="${BRANCH:-main}"
 PY_BIN="${PY_BIN:-python3.11}"
 INSTALL_CHROME="${INSTALL_CHROME:-1}"
 REPO_URL="${REPO_URL:-}"
-AUTH_MODE="${AUTH_MODE:-}"
+AUTH_MODE="${AUTH_MODE:-${AUTH_CHOICE:-}}"
 DEPLOY_ACTION="${DEPLOY_ACTION:-}"
+INSTALLER_REPO_RAW_BASE="${INSTALLER_REPO_RAW_BASE:-https://raw.githubusercontent.com/WiZARDWZ/ascrapper-installer/main}"
+INSTALLER_HOME="${INSTALLER_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/ascrapper-installer}"
 
 RUN_USER="${SUDO_USER:-${USER}}"
 RUN_GROUP="$(id -gn "$RUN_USER")"
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 APP_DIR="${APP_DIR:-$RUN_HOME/apps/$APP_NAME}"
 
-TOKEN_FILE="$RUN_HOME/.config/$APP_NAME/github_token"
+CONFIG_DIR="$RUN_HOME/.config/$APP_NAME"
+CONFIG_FILE="$CONFIG_DIR/installer.conf"
+TOKEN_FILE="$CONFIG_DIR/github_token"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 ENV_FILE="$APP_DIR/.env"
 
@@ -25,6 +29,19 @@ else
   SUDO="sudo"
 fi
 
+log() {
+  echo "[INFO] $*"
+}
+
+warn() {
+  echo "[WARN] $*"
+}
+
+die() {
+  echo "[ERROR] $*"
+  exit 1
+}
+
 run_as_user() {
   if [[ "$(id -u)" -eq 0 ]]; then
     sudo -u "$RUN_USER" -H bash -lc "$*"
@@ -33,21 +50,77 @@ run_as_user() {
   fi
 }
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || { echo "[ERROR] Missing command: $1"; exit 1; }
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
 }
 
-normalize_repo_url_ssh() {
-  local input="$1"
-  if [[ "$input" =~ ^git@github.com:.+/.+\.git$ ]]; then
-    echo "$input"
-    return
+strip_quotes() {
+  local s="$1"
+  if [[ "$s" =~ ^\".*\"$ ]]; then
+    s="${s#\"}"
+    s="${s%\"}"
+  elif [[ "$s" =~ ^\'.*\'$ ]]; then
+    s="${s#\'}"
+    s="${s%\'}"
   fi
-  if [[ "$input" =~ ^https://github.com/([^/]+)/([^/]+?)(\.git)?$ ]]; then
-    echo "git@github.com:${BASH_REMATCH[1]}/${BASH_REMATCH[2]}.git"
-    return
-  fi
-  echo ""
+  printf '%s' "$s"
+}
+
+load_installer_config() {
+  [[ -f "$CONFIG_FILE" ]] || return 0
+
+  while IFS='=' read -r key raw_value; do
+    [[ -n "$key" ]] || continue
+    [[ "$key" =~ ^# ]] && continue
+
+    local value
+    value="$(strip_quotes "$(trim "${raw_value:-}")")"
+
+    case "$key" in
+      REPO_URL)
+        [[ -z "${REPO_URL:-}" ]] && REPO_URL="$value"
+        ;;
+      AUTH_MODE)
+        [[ -z "${AUTH_MODE:-}" ]] && AUTH_MODE="$value"
+        ;;
+      BRANCH)
+        [[ -z "${BRANCH:-}" ]] && BRANCH="$value"
+        ;;
+      APP_NAME)
+        ;;
+      INSTALL_CHROME)
+        [[ -z "${INSTALL_CHROME:-}" ]] && INSTALL_CHROME="$value"
+        ;;
+    esac
+  done < "$CONFIG_FILE"
+}
+
+save_installer_config() {
+  run_as_user "mkdir -p '$CONFIG_DIR'"
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  cat > "$tmp_file" <<CONFIGEOF
+REPO_URL="$REPO_URL"
+AUTH_MODE="$AUTH_MODE"
+BRANCH="$BRANCH"
+APP_NAME="$APP_NAME"
+INSTALL_CHROME="$INSTALL_CHROME"
+CONFIGEOF
+
+  run_as_user "cat > '$CONFIG_FILE'" < "$tmp_file"
+  run_as_user "chmod 600 '$CONFIG_FILE'"
+  rm -f "$tmp_file"
+}
+
+reset_installer_config() {
+  run_as_user "rm -f '$CONFIG_FILE'"
+  REPO_URL=""
+  AUTH_MODE=""
+  log "Installer config reset. You will be prompted for repo/auth again."
 }
 
 extract_owner_repo() {
@@ -63,20 +136,30 @@ extract_owner_repo() {
   echo ""
 }
 
+normalize_repo_url_ssh() {
+  local input="$1"
+  if [[ "$input" =~ ^git@github.com:.+/.+\.git$ ]]; then
+    echo "$input"
+    return
+  fi
+  if [[ "$input" =~ ^https://github.com/([^/]+)/([^/]+?)(\.git)?$ ]]; then
+    echo "git@github.com:${BASH_REMATCH[1]}/${BASH_REMATCH[2]}.git"
+    return
+  fi
+  echo ""
+}
+
 build_pat_url() {
   local base_url="$1"
   local token="$2"
   local owner_repo
   owner_repo="$(extract_owner_repo "$base_url")"
-  if [[ -z "$owner_repo" ]]; then
-    echo ""
-    return
-  fi
+  [[ -n "$owner_repo" ]] || { echo ""; return; }
   echo "https://${token}@github.com/${owner_repo}.git"
 }
 
 ensure_prerequisites() {
-  echo "[Prerequisites] Installing required packages..."
+  log "Installing required packages..."
   $SUDO apt-get update
   $SUDO apt-get install -y software-properties-common
   $SUDO add-apt-repository -y ppa:deadsnakes/ppa || true
@@ -88,7 +171,7 @@ ensure_prerequisites() {
     libxcomposite1 libxdamage1 libxrandr2 libasound2 fonts-liberation
 
   if [[ "$INSTALL_CHROME" == "1" ]]; then
-    echo "[Prerequisites] Installing Google Chrome stable..."
+    log "Installing Google Chrome stable..."
     local tmp_deb="/tmp/google-chrome-stable_current_amd64.deb"
     curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o "$tmp_deb"
     $SUDO dpkg -i "$tmp_deb" || $SUDO apt-get -f install -y
@@ -99,16 +182,14 @@ ensure_prerequisites() {
 prompt_repo_url() {
   while true; do
     if [[ -z "$REPO_URL" ]]; then
-      read -r -p "GitHub repo URL را وارد کنید (SSH/HTTPS): " REPO_URL
+      read -r -p "Enter GitHub repo URL (SSH/HTTPS): " REPO_URL
     fi
 
-    local owner_repo
-    owner_repo="$(extract_owner_repo "$REPO_URL")"
-    if [[ -n "$owner_repo" ]]; then
-      break
+    if [[ -n "$(extract_owner_repo "$REPO_URL")" ]]; then
+      return 0
     fi
 
-    echo "[WARN] فرمت REPO_URL معتبر نیست. مثال: git@github.com:OWNER/REPO.git"
+    warn "Invalid REPO_URL format. Example: git@github.com:OWNER/REPO.git"
     REPO_URL=""
   done
 }
@@ -118,48 +199,45 @@ setup_ssh_access() {
   run_as_user "mkdir -p '$RUN_HOME/.ssh' && chmod 700 '$RUN_HOME/.ssh'"
 
   if ! run_as_user "test -f '$ssh_key'"; then
-    echo "کلید SSH پیدا نشد. در حال ساخت کلید جدید..."
+    log "SSH key not found. Generating a new key..."
     run_as_user "ssh-keygen -t ed25519 -C 'deploy@server' -f '$ssh_key' -N ''"
   fi
 
   echo
-  echo "کلید عمومی شما:"
+  echo "Public key:"
   run_as_user "cat '${ssh_key}.pub'"
   echo
-  echo "این کلید را در GitHub Repo → Settings → Deploy Keys اضافه کنید (Read-only کافی است)."
-  read -r -p "بعد از اضافه‌کردن کلید، Enter بزنید تا تست اتصال انجام شود..." _
+  echo "Add this key in GitHub: Repository -> Settings -> Deploy keys -> Add deploy key"
+  read -r -p "Press Enter after adding the key..." _
 
   run_as_user "ssh -o StrictHostKeyChecking=accept-new -T git@github.com || true"
 
   local normalized
   normalized="$(normalize_repo_url_ssh "$REPO_URL")"
-  if [[ -z "$normalized" ]]; then
-    echo "REPO_URL باید قابل تبدیل به SSH باشد."
-    REPO_URL=""
-    prompt_repo_url
-    normalized="$(normalize_repo_url_ssh "$REPO_URL")"
-  fi
+  [[ -n "$normalized" ]] || die "REPO_URL cannot be converted to SSH format."
   REPO_URL="$normalized"
 }
 
 setup_pat_access() {
   local token="${GITHUB_PAT:-}"
-  run_as_user "mkdir -p '$RUN_HOME/.config/$APP_NAME'"
-  if [[ -z "$token" ]]; then
-    read -r -s -p "GitHub PAT را وارد کنید: " token
-    echo
+  run_as_user "mkdir -p '$CONFIG_DIR'"
+
+  if [[ -z "$token" ]] && run_as_user "test -f '$TOKEN_FILE'"; then
+    return 0
   fi
 
   if [[ -z "$token" ]]; then
-    echo "[WARN] توکن خالی است."
-    return 1
+    read -r -s -p "Enter GitHub PAT: " token
+    echo
   fi
+
+  [[ -n "$token" ]] || { warn "PAT is empty."; return 1; }
 
   run_as_user "cat > '$TOKEN_FILE' <<'TOK'
 $token
 TOK"
   run_as_user "chmod 600 '$TOKEN_FILE'"
-  echo "توکن در $TOKEN_FILE ذخیره شد (chmod 600)."
+  log "PAT saved to $TOKEN_FILE"
   return 0
 }
 
@@ -168,9 +246,7 @@ check_repo_access() {
   local test_url="$REPO_URL"
 
   if [[ "$mode" == "pat" ]]; then
-    if ! run_as_user "test -f '$TOKEN_FILE'"; then
-      return 1
-    fi
+    run_as_user "test -f '$TOKEN_FILE'" || return 1
     local token
     token="$(run_as_user "cat '$TOKEN_FILE'")"
     test_url="$(build_pat_url "$REPO_URL" "$token")"
@@ -180,58 +256,65 @@ check_repo_access() {
   run_as_user "git ls-remote '$test_url' -h 'refs/heads/$BRANCH' >/dev/null 2>&1"
 }
 
-select_auth_and_validate() {
-  prompt_repo_url
-
-  if [[ "$AUTH_MODE" == "ssh" ]]; then
-    setup_ssh_access
-    check_repo_access "ssh"
-    return
-  fi
-
-  if [[ "$AUTH_MODE" == "pat" ]]; then
-    setup_pat_access
-    check_repo_access "pat"
-    return
-  fi
-
+choose_auth_mode_interactive() {
   while true; do
     echo
-    echo "روش دسترسی به ریپوی private کدام است؟"
-    echo "1) SSH Deploy Key (پیشنهادی)"
+    echo "Choose GitHub private repo access method:"
+    echo "1) SSH Deploy Key (recommended)"
     echo "2) GitHub Personal Access Token (PAT)"
-    echo "0) خروج"
-    read -r -p "انتخاب شما: " auth_choice
+    echo "0) Exit"
+    read -r -p "Your choice: " auth_choice
 
     case "$auth_choice" in
-      1)
-        setup_ssh_access
-        if check_repo_access "ssh"; then
-          AUTH_MODE="ssh"
-          return 0
-        fi
-        echo "[WARN] دسترسی SSH ناموفق بود. لطفاً مجدد تلاش کنید."
-        ;;
-      2)
-        if setup_pat_access && check_repo_access "pat"; then
-          AUTH_MODE="pat"
-          return 0
-        fi
-        echo "[WARN] دسترسی PAT ناموفق بود. لطفاً توکن/URL را بررسی کنید."
-        ;;
-      0)
-        echo "خروج."
-        exit 0
-        ;;
-      *)
-        echo "گزینه نامعتبر."
-        ;;
+      1) AUTH_MODE="ssh"; return 0 ;;
+      2) AUTH_MODE="pat"; return 0 ;;
+      0) exit 0 ;;
+      *) warn "Invalid choice." ;;
     esac
   done
 }
 
+select_auth_and_validate() {
+  local force_prompt="${1:-0}"
+
+  [[ "$force_prompt" == "1" ]] && REPO_URL="" AUTH_MODE=""
+
+  prompt_repo_url
+
+  if [[ -z "$AUTH_MODE" ]]; then
+    choose_auth_mode_interactive
+  fi
+
+  if [[ "$AUTH_MODE" == "ssh" ]] && check_repo_access "ssh"; then
+    return 0
+  fi
+
+  if [[ "$AUTH_MODE" == "pat" ]] && check_repo_access "pat"; then
+    return 0
+  fi
+
+  case "$AUTH_MODE" in
+    ssh)
+      setup_ssh_access
+      check_repo_access "ssh" || return 1
+      ;;
+    pat)
+      setup_pat_access || return 1
+      check_repo_access "pat" || return 1
+      ;;
+    *)
+      warn "Invalid AUTH_MODE: $AUTH_MODE"
+      AUTH_MODE=""
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 clone_or_update_repo() {
   local work_url="$REPO_URL"
+
   if [[ "$AUTH_MODE" == "pat" ]]; then
     local token
     token="$(run_as_user "cat '$TOKEN_FILE'")"
@@ -239,27 +322,40 @@ clone_or_update_repo() {
   fi
 
   run_as_user "mkdir -p '$(dirname "$APP_DIR")'"
+
   if [[ ! -d "$APP_DIR/.git" ]]; then
-    echo "[Repo] Cloning..."
-    if ! run_as_user "git clone --branch '$BRANCH' '$work_url' '$APP_DIR'"; then
-      echo "[WARN] clone ناموفق بود؛ تنظیم دسترسی دوباره اجرا می‌شود."
-      AUTH_MODE=""
-      select_auth_and_validate
-      clone_or_update_repo
-      return
-    fi
+    log "Cloning repository..."
+    run_as_user "git clone --branch '$BRANCH' '$work_url' '$APP_DIR'" || return 1
   else
-    echo "[Repo] Updating..."
-    if ! run_as_user "git -C '$APP_DIR' remote set-url origin '$work_url' && git -C '$APP_DIR' fetch origin '$BRANCH' && git -C '$APP_DIR' checkout '$BRANCH' && git -C '$APP_DIR' pull --ff-only origin '$BRANCH'"; then
-      echo "[WARN] pull ناموفق بود؛ تنظیم دسترسی دوباره اجرا می‌شود."
-      AUTH_MODE=""
-      select_auth_and_validate
-      clone_or_update_repo
-      return
-    fi
+    log "Updating repository..."
+    run_as_user "git -C '$APP_DIR' remote set-url origin '$work_url'"
+    run_as_user "git -C '$APP_DIR' fetch origin '$BRANCH'"
+    run_as_user "git -C '$APP_DIR' checkout '$BRANCH'"
+    run_as_user "git -C '$APP_DIR' pull --ff-only origin '$BRANCH'" || return 1
   fi
 
   run_as_user "git -C '$APP_DIR' remote set-url origin '$REPO_URL'"
+  return 0
+}
+
+prepare_repo() {
+  local force_prompt="${1:-0}"
+
+  while true; do
+    if ! select_auth_and_validate "$force_prompt"; then
+      warn "Repository authentication failed. Please provide repo/auth again."
+      force_prompt=1
+      continue
+    fi
+
+    if clone_or_update_repo; then
+      save_installer_config
+      return 0
+    fi
+
+    warn "Clone/pull failed. Please verify repository URL/authentication."
+    force_prompt=1
+  done
 }
 
 setup_venv_deps() {
@@ -272,6 +368,7 @@ upsert_env() {
   local key="$1"
   local value="$2"
   run_as_user "touch '$ENV_FILE'"
+
   if run_as_user "grep -q '^${key}=' '$ENV_FILE'"; then
     run_as_user "sed -i 's|^${key}=.*|${key}=${value}|' '$ENV_FILE'"
   else
@@ -282,35 +379,17 @@ upsert_env() {
 env_get() {
   local key="$1"
   local file="$2"
-  local line=""
-  local value=""
 
-  if ! run_as_user "test -f '$file'"; then
-    echo ""
-    return 0
-  fi
+  run_as_user "test -f '$file'" || { echo ""; return 0; }
 
+  local line
   line="$(run_as_user "grep -m1 -E '^${key}=' '$file' || true")"
-  if [[ -z "$line" ]]; then
-    echo ""
-    return 0
-  fi
+  [[ -n "$line" ]] || { echo ""; return 0; }
 
+  local value
   value="${line#*=}"
-
-  # trim leading/trailing whitespace
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-
-  # strip matching surrounding quotes
-  if [[ "$value" =~ ^\".*\"$ ]]; then
-    value="${value#\"}"
-    value="${value%\"}"
-  elif [[ "$value" =~ ^\'.*\'$ ]]; then
-    value="${value#\'}"
-    value="${value%\'}"
-  fi
-
+  value="$(trim "$value")"
+  value="$(strip_quotes "$value")"
   echo "$value"
 }
 
@@ -318,7 +397,7 @@ env_wizard() {
   run_as_user "mkdir -p '$APP_DIR' && touch '$ENV_FILE'"
 
   local token existing_token
-  existing_token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE" || true)"
+  existing_token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE")"
   token="${TELEGRAM_BOT_TOKEN:-}"
 
   if [[ -z "$token" && -n "$existing_token" ]]; then
@@ -326,23 +405,23 @@ env_wizard() {
   fi
 
   if [[ -z "$token" ]]; then
-    read -r -p "توکن تلگرام را وارد کنید: " token
+    read -r -p "Enter Telegram bot token: " token
     while [[ -z "$token" ]]; do
-      echo "توکن نمی‌تواند خالی باشد."
-      read -r -p "توکن تلگرام را وارد کنید: " token
+      warn "Token cannot be empty."
+      read -r -p "Enter Telegram bot token: " token
     done
   fi
   upsert_env "TELEGRAM_BOT_TOKEN" "$token"
 
   local proxy_choice proxy_val
-  proxy_val="${TELEGRAM_PROXY_URL:-$(env_get 'TELEGRAM_PROXY_URL' "$ENV_FILE" || true)}"
+  proxy_val="${TELEGRAM_PROXY_URL:-$(env_get 'TELEGRAM_PROXY_URL' "$ENV_FILE")}"
 
   if [[ -n "${TELEGRAM_PROXY_URL:-}" ]]; then
     upsert_env "TELEGRAM_PROXY_URL" "$TELEGRAM_PROXY_URL"
   else
-    read -r -p "آیا پروکسی لازم دارید؟ (y/n): " proxy_choice
+    read -r -p "Do you need a Telegram proxy? (y/N): " proxy_choice
     if [[ "$proxy_choice" =~ ^[Yy]$ ]]; then
-      read -r -p "آدرس پروکسی (مثال: http://127.0.0.1:10809): " proxy_val
+      read -r -p "Enter proxy URL (example: http://127.0.0.1:10809): " proxy_val
       upsert_env "TELEGRAM_PROXY_URL" "$proxy_val"
     elif [[ -z "$proxy_val" ]]; then
       upsert_env "TELEGRAM_PROXY_URL" ""
@@ -359,15 +438,13 @@ env_wizard() {
 
 ensure_token_present() {
   local token
-  token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE" || true)"
+  token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE")"
+
   if [[ -z "$token" ]]; then
-    echo "[WARN] TELEGRAM_BOT_TOKEN خالی است."
+    warn "TELEGRAM_BOT_TOKEN is empty. Starting .env wizard..."
     env_wizard
-    token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE" || true)"
-    if [[ -z "$token" ]]; then
-      echo "[ERROR] بدون TELEGRAM_BOT_TOKEN سرویس اجرا نمی‌شود."
-      exit 1
-    fi
+    token="$(env_get 'TELEGRAM_BOT_TOKEN' "$ENV_FILE")"
+    [[ -n "$token" ]] || die "TELEGRAM_BOT_TOKEN is still empty. Service cannot start."
   fi
 }
 
@@ -399,12 +476,12 @@ SERVICEEOF
 restart_service() {
   ensure_token_present
   $SUDO systemctl restart "$SERVICE_NAME"
-  echo "سرویس ${SERVICE_NAME} ری‌استارت شد."
+  log "Service ${SERVICE_NAME} restarted."
 }
 
 stop_service() {
   $SUDO systemctl stop "$SERVICE_NAME" || true
-  echo "سرویس ${SERVICE_NAME} متوقف شد."
+  log "Service ${SERVICE_NAME} stopped."
 }
 
 show_status_logs() {
@@ -412,10 +489,44 @@ show_status_logs() {
   $SUDO journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
 }
 
+download_installer_file() {
+  local file_name="$1"
+  local destination="$2"
+  local tmp_file
+  tmp_file="$(mktemp "$INSTALLER_HOME/.${file_name}.XXXXXX")"
+
+  curl --connect-timeout 10 \
+    --max-time 60 \
+    --retry 5 \
+    --retry-all-errors \
+    --retry-delay 2 \
+    -fL \
+    --show-error \
+    --progress-bar \
+    "$INSTALLER_REPO_RAW_BASE/$file_name" \
+    -o "$tmp_file"
+
+  chmod +x "$tmp_file"
+  mv -f "$tmp_file" "$destination"
+}
+
+update_installer_only() {
+  run_as_user "mkdir -p '$INSTALLER_HOME'"
+
+  local deploy_target="$INSTALLER_HOME/deploy.sh"
+  local bootstrap_target="$INSTALLER_HOME/bootstrap.sh"
+
+  log "Updating installer scripts only..."
+  download_installer_file "deploy.sh" "$deploy_target"
+  download_installer_file "bootstrap.sh" "$bootstrap_target"
+
+  log "Installer updated. Re-run 'ascrapper' to use the newest menu."
+  log "No bot service actions were performed."
+}
+
 install_setup_flow() {
   ensure_prerequisites
-  select_auth_and_validate
-  clone_or_update_repo
+  prepare_repo 0
   setup_venv_deps
   env_wizard
   write_service
@@ -428,8 +539,7 @@ install_setup_flow() {
 }
 
 update_flow() {
-  select_auth_and_validate
-  clone_or_update_repo
+  prepare_repo 0
   setup_venv_deps
   restart_service
   show_status_logs
@@ -444,14 +554,16 @@ menu_loop() {
   while true; do
     echo
     echo "===== $APP_NAME deploy menu ====="
-    echo "1) نصب اولیه / راه‌اندازی"
-    echo "2) بروزرسانی کد از GitHub + deps + restart سرویس"
-    echo "3) ریستارت سرویس"
-    echo "4) توقف سرویس"
-    echo "5) مشاهده وضعیت و لاگ‌ها"
-    echo "6) تنظیم مجدد توکن‌ها / پروکسی (.env wizard)"
-    echo "0) خروج"
-    read -r -p "انتخاب شما: " choice
+    echo "1) Initial install / setup"
+    echo "2) Update code from GitHub + deps + restart service"
+    echo "3) Restart service"
+    echo "4) Stop service"
+    echo "5) Show status and logs"
+    echo "6) Reconfigure token/proxy (.env wizard)"
+    echo "7) Update installer only (no bot/service changes)"
+    echo "8) Reset saved installer config (repo/auth)"
+    echo "0) Exit"
+    read -r -p "Your choice: " choice
 
     case "$choice" in
       1) install_setup_flow ;;
@@ -460,33 +572,44 @@ menu_loop() {
       4) stop_service ;;
       5) show_status_logs ;;
       6) env_wizard ;;
+      7) update_installer_only ;;
+      8) reset_installer_config ;;
       0) exit 0 ;;
-      *) echo "گزینه نامعتبر." ;;
+      *) warn "Invalid choice." ;;
     esac
   done
 }
 
 main() {
+  load_installer_config
+
   case "$DEPLOY_ACTION" in
     install)
       install_setup_flow
-      return
       ;;
     update)
       update_flow
-      return
       ;;
     restart)
       restart_only_flow
-      return
+      ;;
+    installer-update)
+      update_installer_only
+      ;;
+    reset-config)
+      reset_installer_config
+      ;;
+    "")
+      if [[ -d "$APP_DIR" && -f "$SERVICE_FILE" ]]; then
+        menu_loop
+      else
+        install_setup_flow
+      fi
+      ;;
+    *)
+      die "Unknown DEPLOY_ACTION: $DEPLOY_ACTION"
       ;;
   esac
-
-  if [[ -d "$APP_DIR" && -f "$SERVICE_FILE" ]]; then
-    menu_loop
-  else
-    install_setup_flow
-  fi
 }
 
 main "$@"
